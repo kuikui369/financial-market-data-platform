@@ -1,0 +1,38 @@
+# Virtual Environment
+venv/
+env/
+ENV/
+*.env
+
+# Runtime Logs & PIDs
+*.log
+.platform.pids
+uvicorn.log
+producer.log
+strategy.log
+dashboard.log
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# IDE & Editor Configurations
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Maven & Java Build Outputs
+target/
+*.class
+*.jar
+*.war
+
+# Streamlit Local Cache
+.streamlit/
+
+# OS Generated Files
+.DS_Store
+Thumbs.db
