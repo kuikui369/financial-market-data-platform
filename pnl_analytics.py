@@ -1,99 +1,132 @@
+"""
+FIFO Realized PnL & Position Analytics Engine
+Decoupled functional core for deterministic testing and live PostgreSQL ledger processing.
+"""
 import psycopg2
 from collections import defaultdict, deque
 
-def compute_portfolio_pnl(lot_size: int = 100):
-    """
-    Connects to PostgreSQL, loads historical executions in chronological order,
-    and calculates realized PnL and net open inventory using FIFO accounting.
-    """
-    conn = psycopg2.connect(
-        host="localhost",
-        port=5432,
-        database="market_ledger",
-        user="quant_admin",
-        password="quant_password"
-    )
-    cursor = conn.cursor()
 
-    cursor.execute("""
-        SELECT execution_id, ticker, signal_type, trade_price, executed_at
-        FROM trade_executions
-        ORDER BY execution_id ASC;
-    """)
-    executions = cursor.fetchall()
-    cursor.close()
-    conn.close()
+def calculate_fifo_pnl(executions, default_lot_size: int = 100):
+    """
+    Pure deterministic FIFO accounting engine.
+    Accepts an iterable of executions (dicts or DB tuples) and calculates:
+    - Realized Profit & Loss per ticker and portfolio
+    - Strategy Win Rate %
+    - Remaining open inventory positions
+    """
+    if not executions:
+        return {
+            "total_executions_processed": 0,
+            "total_closed_trades": 0,
+            "total_realized_pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "pnl_by_ticker": {},
+            "net_open_inventory": {},
+            "recent_closed_trades": []
+        }
 
-    # FIFO queues: ticker -> deque of [price, remaining_shares]
     buy_inventory = defaultdict(deque)
     realized_pnl_by_ticker = defaultdict(float)
     closed_trades = []
-    current_inventory = defaultdict(int)
+    total_processed = 0
 
-    for exec_id, ticker, signal, price, timestamp in executions:
-        price = float(price)
+    for exec_item in executions:
+        total_processed += 1
+        if isinstance(exec_item, dict):
+            ticker = exec_item.get("ticker")
+            side = exec_item.get("side") or exec_item.get("signal_type")
+            price = float(exec_item.get("price") or exec_item.get("trade_price"))
+            shares = int(exec_item.get("shares", default_lot_size))
+            timestamp = str(exec_item.get("timestamp") or exec_item.get("executed_at", ""))
+        else:
+            # Tuple from PostgreSQL: (execution_id, ticker, signal_type, trade_price, executed_at)
+            _, ticker, side, price, timestamp = exec_item
+            price = float(price)
+            shares = default_lot_size
+            timestamp = str(timestamp)
 
-        if signal == "BUY":
-            buy_inventory[ticker].append({"price": price, "shares": lot_size, "time": timestamp})
-            current_inventory[ticker] += lot_size
-
-        elif signal == "SELL":
-            shares_to_sell = lot_size
-            current_inventory[ticker] -= lot_size
-
-            # Match against existing long inventory using FIFO
+        if side == "BUY":
+            buy_inventory[ticker].append([price, shares])
+        elif side == "SELL":
+            shares_to_sell = shares
             while shares_to_sell > 0 and buy_inventory[ticker]:
-                oldest_buy = buy_inventory[ticker][0]
-                matched_shares = min(shares_to_sell, oldest_buy["shares"])
+                earliest_buy = buy_inventory[ticker][0]
+                buy_price, buy_qty = earliest_buy
 
-                # Calculate realized profit/loss
-                gain = (price - oldest_buy["price"]) * matched_shares
-                realized_pnl_by_ticker[ticker] += gain
+                fill_shares = min(shares_to_sell, buy_qty)
+                trade_pnl = round((price - buy_price) * fill_shares, 2)
+                realized_pnl_by_ticker[ticker] += trade_pnl
 
                 closed_trades.append({
                     "ticker": ticker,
-                    "buy_price": oldest_buy["price"],
+                    "buy_price": buy_price,
                     "sell_price": price,
-                    "shares": matched_shares,
-                    "pnl": round(gain, 2),
-                    "closed_at": str(timestamp)
+                    "shares": fill_shares,
+                    "pnl": trade_pnl,
+                    "closed_at": timestamp
                 })
 
-                oldest_buy["shares"] -= matched_shares
-                shares_to_sell -= matched_shares
-
-                if oldest_buy["shares"] == 0:
+                shares_to_sell -= fill_shares
+                if fill_shares == buy_qty:
                     buy_inventory[ticker].popleft()
+                else:
+                    earliest_buy[1] -= fill_shares
 
-    total_realized = sum(realized_pnl_by_ticker.values())
-    winning_trades = [t for t in closed_trades if t["pnl"] > 0]
-    win_rate = (len(winning_trades) / len(closed_trades) * 100) if closed_trades else 0.0
+    total_closed = len(closed_trades)
+    profitable_trades = sum(1 for t in closed_trades if t["pnl"] > 0)
+    win_rate = round((profitable_trades / total_closed) * 100.0, 2) if total_closed > 0 else 0.0
+    total_pnl = round(sum(realized_pnl_by_ticker.values()), 2)
+
+    net_inventory = {}
+    for ticker, dq in buy_inventory.items():
+        total_open_shares = sum(lot[1] for lot in dq)
+        if total_open_shares > 0 or ticker in realized_pnl_by_ticker:
+            net_inventory[ticker] = total_open_shares
 
     return {
-        "total_executions_processed": len(executions),
-        "total_closed_trades": len(closed_trades),
-        "total_realized_pnl": round(total_realized, 2),
-        "win_rate_pct": round(win_rate, 2),
-        "pnl_by_ticker": {k: round(v, 2) for k, v in realized_pnl_by_ticker.items()},
-        "net_open_inventory": dict(current_inventory),
-        "recent_closed_trades": closed_trades[-5:] if closed_trades else []
+        "total_executions_processed": total_processed,
+        "total_closed_trades": total_closed,
+        "total_realized_pnl": total_pnl,
+        "win_rate_pct": win_rate,
+        "pnl_by_ticker": dict(realized_pnl_by_ticker),
+        "net_open_inventory": net_inventory,
+        "recent_closed_trades": closed_trades[-20:]
     }
 
-if __name__ == "__main__":
-    report = compute_portfolio_pnl()
-    print("=" * 65)
-    print("      QUANTITATIVE PORTFOLIO PERFORMANCE & PnL SUMMARY")
-    print("=" * 65)
-    print(f"Total Executions Audited : {report['total_executions_processed']}")
-    print(f"Total Round-Trip Trades  : {report['total_closed_trades']}")
-    print(f"Cumulative Realized PnL  : ${report['total_realized_pnl']:,.2f}")
-    print(f"Strategy Win Rate        : {report['win_rate_pct']}%")
-    print("-" * 65)
-    print("Realized PnL by Security:")
-    for ticker, pnl in report['pnl_by_ticker'].items():
-        print(f"  [{ticker}] ${pnl:,.2f}")
-    print("-" * 65)
-    print("Net Open Share Inventory:")
-    for ticker, shares in report['net_open_inventory'].items():
-        print(f"  [{ticker}] {shares} shares")
-    print("=" * 65)
+
+def compute_portfolio_pnl(lot_size: int = 100):
+    """
+    Imperative Database Wrapper:
+    Fetches raw execution rows from PostgreSQL and delegates calculation
+    to calculate_fifo_pnl. Preserves exact compatibility with api_gateway.py.
+    """
+    try:
+        conn = psycopg2.connect(
+            host="localhost",
+            port=5432,
+            database="market_ledger",
+            user="quant_admin",
+            password="quant_password"
+        )
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT execution_id, ticker, signal_type, trade_price, executed_at
+            FROM trade_executions
+            ORDER BY execution_id ASC;
+        """)
+        executions = cursor.fetchall()
+        cursor.close()
+        conn.close()
+    except Exception as e:
+        return {
+            "error": f"Database query failed: {str(e)}",
+            "total_executions_processed": 0,
+            "total_closed_trades": 0,
+            "total_realized_pnl": 0.0,
+            "win_rate_pct": 0.0,
+            "pnl_by_ticker": {},
+            "net_open_inventory": {},
+            "recent_closed_trades": []
+        }
+
+    return calculate_fifo_pnl(executions, default_lot_size=lot_size)

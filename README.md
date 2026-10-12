@@ -1,5 +1,7 @@
 # 🏛️ Institutional Market Data & Quantitative Execution Platform
 
+![Institutional CI/CD Platform Pipeline](https://github.com/kuikui369/financial-market-data-platform/actions/workflows/ci.yml/badge.svg)
+
 An exchange-agnostic, distributed event-driven market data pipeline and quantitative execution platform built with Apache Flink, KRaft Kafka, PostgreSQL 16 with pgvector, FastAPI, and Streamlit.
 
 ---

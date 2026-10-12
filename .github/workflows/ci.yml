@@ -1,0 +1,93 @@
+name: Institutional CI/CD Platform Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # =========================================================================
+  # JOB 1: Apache Flink Streaming Engine Compilation (Java 17 / Maven)
+  # =========================================================================
+  flink-stream-build:
+    name: Build & Verify Flink Core (Java 17)
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Compile and Package Flink Streaming JAR
+        run: |
+          mvn clean compile test-compile package -DskipTests=false -B
+          ls -lh target/*.jar
+
+      - name: Emit Build Summary
+        run: |
+          echo "### Apache Flink Java 17 Build Passed :white_check_mark:" >> $GITHUB_STEP_SUMMARY
+          echo "- Target artifact compiled successfully under Temurin JDK 17." >> $GITHUB_STEP_SUMMARY
+
+  # =========================================================================
+  # JOB 2: Python Strategy & FIFO Analytics Engine Test Suite
+  # =========================================================================
+  python-test-suite:
+    name: Test Quantitative & Accounting Services (Python 3.10)
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install Runtime & Test Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-cov pandas psycopg2-binary fastapi pydantic
+
+      - name: Execute FIFO PnL Analytics Unit Tests
+        run: |
+          pytest tests/ -v --cov=pnl_analytics --cov-report=term-missing
+
+      - name: Emit Test Summary
+        run: |
+          echo "### Quantitative Strategy & Accounting Tests Passed :white_check_mark:" >> $GITHUB_STEP_SUMMARY
+          echo "- FIFO PnL Cost-Basis Invariant: Verified" >> $GITHUB_STEP_SUMMARY
+          echo "- Multi-Ticker Queue Isolation: Verified" >> $GITHUB_STEP_SUMMARY
+
+  # =========================================================================
+  # JOB 3: Infrastructure & Orchestration Linting
+  # =========================================================================
+  infrastructure-lint:
+    name: Validate Infrastructure Orchestration
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Validate Docker Compose Configuration
+        run: |
+          docker compose config --quiet
+          echo "Docker Compose topology syntax validated successfully."
+
+      - name: Validate Shell Orchestrator Syntax
+        run: |
+          bash -n manage.sh
+          echo "manage.sh bash syntax validated successfully."

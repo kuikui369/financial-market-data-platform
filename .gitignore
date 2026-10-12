@@ -35,4 +35,5 @@ target/
 
 # OS Generated Files
 .DS_Store
-Thumbs.db
+Thumbs.db.coverage
+.coverage
